@@ -5,7 +5,7 @@
 
 # Site Availability Checker
 ---
-solvit.space/projects/uptime_monitor
+https://solvit.space/projects/uptime_monitor
 ---
 **Service for monitoring website availability.**
 
