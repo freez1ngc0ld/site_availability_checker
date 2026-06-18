@@ -1,0 +1,125 @@
+services:
+  postgres_db:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: core_monitor_rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_PORT}:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  migration_runner:
+    build: ./backend
+    container_name: core_monitor_migrations
+    command: sh -c "uv run alembic revision --autogenerate -m 'auto_migration' && uv run alembic upgrade head"
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+
+  backend_api:
+    build: ./backend
+    container_name: core_monitor_api
+    command: uv run python -m src.main
+    ports:
+      - "${PORT}:8000" 
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      migration_runner:
+        condition: service_completed_successfully 
+
+  taskiq_worker:
+    build: ./backend
+    container_name: core_monitor_worker
+    command: uv run taskiq worker src.modules.site_checker.workers.tasks:broker --log-level INFO
+    volumes:
+      - ./backend:/app
+      - /app/.venv    
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      rabbitmq:
+        condition: service_healthy  
+      migration_runner:
+        condition: service_completed_successfully 
+
+  taskiq_scheduler:
+    build: ./backend
+    container_name: core_monitor_scheduler
+    command: uv run taskiq scheduler src.modules.site_checker.workers.tasks:scheduler --log-level INFO
+    volumes:
+      - ./backend:/app
+      - /app/.venv      
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      rabbitmq:
+        condition: service_healthy 
+      migration_runner:
+        condition: service_completed_successfully
+
+  frontend:
+    build: ./frontend
+    container_name: core_monitor_frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules  
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend_api
+
+volumes:
+  postgres_data:
+    name: core_monitor_postgres_data
+  redis_data:
+    name: core_monitor_redis_data
+  rabbitmq_data:
+    name: core_monitor_rabbitmq_data
